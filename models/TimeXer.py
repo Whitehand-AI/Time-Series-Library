@@ -154,7 +154,19 @@ class Model(nn.Module):
         self.head = FlattenHead(configs.enc_in, self.head_nf, configs.pred_len,
                                 head_dropout=configs.dropout)
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    @staticmethod
+    def _add_prior(en_embed, ex_embed, n_vars, en_prior, ex_prior):
+        # cgo2vec ontology conditioning. en_prior [n_vars, d_model] is added to every patch
+        # token of its variate (including the global token); ex_prior [n_ex, d_model] to the
+        # exogenous variate tokens, leaving the time-feature tokens after them untouched.
+        en_embed = torch.reshape(en_embed, (-1, n_vars, en_embed.shape[-2], en_embed.shape[-1]))
+        en_embed = en_embed + en_prior.unsqueeze(0).unsqueeze(2)
+        en_embed = torch.reshape(en_embed, (-1, en_embed.shape[-2], en_embed.shape[-1]))
+        n_ex = ex_prior.shape[0]
+        ex_embed = torch.cat([ex_embed[:, :n_ex] + ex_prior.unsqueeze(0), ex_embed[:, n_ex:]], dim=1)
+        return en_embed, ex_embed
+
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, prior=None):
         if self.use_norm:
             # Normalization from Non-stationary Transformer
             means = x_enc.mean(1, keepdim=True).detach()
@@ -166,6 +178,8 @@ class Model(nn.Module):
 
         en_embed, n_vars = self.en_embedding(x_enc[:, :, -1].unsqueeze(-1).permute(0, 2, 1))
         ex_embed = self.ex_embedding(x_enc[:, :, :-1], x_mark_enc)
+        if prior is not None:  # prior: [N, d_model], one row per input channel
+            en_embed, ex_embed = self._add_prior(en_embed, ex_embed, n_vars, prior[-1:], prior[:-1])
 
         enc_out = self.encoder(en_embed, ex_embed)
         enc_out = torch.reshape(
@@ -184,7 +198,7 @@ class Model(nn.Module):
         return dec_out
 
 
-    def forecast_multi(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast_multi(self, x_enc, x_mark_enc, x_dec, x_mark_dec, prior=None):
         if self.use_norm:
             # Normalization from Non-stationary Transformer
             means = x_enc.mean(1, keepdim=True).detach()
@@ -196,6 +210,8 @@ class Model(nn.Module):
 
         en_embed, n_vars = self.en_embedding(x_enc.permute(0, 2, 1))
         ex_embed = self.ex_embedding(x_enc, x_mark_enc)
+        if prior is not None:  # prior: [N, d_model], one row per input channel
+            en_embed, ex_embed = self._add_prior(en_embed, ex_embed, n_vars, prior, prior)
 
         enc_out = self.encoder(en_embed, ex_embed)
         enc_out = torch.reshape(
@@ -213,13 +229,13 @@ class Model(nn.Module):
 
         return dec_out
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, prior=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
             if self.features == 'M':
-                dec_out = self.forecast_multi(x_enc, x_mark_enc, x_dec, x_mark_dec)
+                dec_out = self.forecast_multi(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
                 return dec_out[:, -self.pred_len:, :]  # [B, L, D]
             else:
-                dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+                dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
                 return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         else:
             return None
