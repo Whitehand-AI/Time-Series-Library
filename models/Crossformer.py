@@ -79,11 +79,21 @@ class Model(nn.Module):
 
 
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, prior=None):
+        """
+        prior: optional [N, d_model] tensor added to every segment token of variate n,
+        after the positional embedding and before pre_norm (cgo2vec ontology
+        conditioning). Note that enc_pos_embedding already has a variate axis, so this
+        prior is representable by that parameter alone; it changes the optimisation
+        path, not the function class. With prior=None the computation is identical to
+        upstream.
+        """
         # embedding
         x_enc, n_vars = self.enc_value_embedding(x_enc.permute(0, 2, 1))
         x_enc = rearrange(x_enc, '(b d) seg_num d_model -> b d seg_num d_model', d = n_vars)
-        x_enc += self.enc_pos_embedding
+        x_enc = x_enc + self.enc_pos_embedding
+        if prior is not None:
+            x_enc = x_enc + prior.unsqueeze(0).unsqueeze(2)  # [1, N, 1, d_model]
         x_enc = self.pre_norm(x_enc)
         enc_out, attns = self.encoder(x_enc)
 
@@ -129,9 +139,9 @@ class Model(nn.Module):
         output = self.projection(output)
         return output
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, prior=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
