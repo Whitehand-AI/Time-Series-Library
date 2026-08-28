@@ -52,7 +52,14 @@ class Model(nn.Module):
             self.projection = nn.Linear(
                 configs.enc_in * configs.seq_len, configs.num_class)
 
-    def encoder(self, x):
+    def encoder(self, x, prior=None):
+        """
+        prior: optional [N, pred_len] tensor added to every sample's forecast, one
+        row per variate (cgo2vec ontology conditioning). The forecast is the only
+        learned representation this model has, so it is the only place a prior can be
+        added where the model controls the relative scale. With prior=None the
+        computation is identical to upstream.
+        """
         seasonal_init, trend_init = self.decompsition(x)
         seasonal_init, trend_init = seasonal_init.permute(
             0, 2, 1), trend_init.permute(0, 2, 1)
@@ -69,12 +76,14 @@ class Model(nn.Module):
         else:
             seasonal_output = self.Linear_Seasonal(seasonal_init)
             trend_output = self.Linear_Trend(trend_init)
-        x = seasonal_output + trend_output
+        x = seasonal_output + trend_output  # [B, N, pred_len]
+        if prior is not None:
+            x = x + prior.unsqueeze(0)
         return x.permute(0, 2, 1)
 
-    def forecast(self, x_enc):
+    def forecast(self, x_enc, prior=None):
         # Encoder
-        return self.encoder(x_enc)
+        return self.encoder(x_enc, prior=prior)
 
     def imputation(self, x_enc):
         # Encoder
@@ -94,9 +103,9 @@ class Model(nn.Module):
         output = self.projection(output)
         return output
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, prior=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc)
+            dec_out = self.forecast(x_enc, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc)
