@@ -79,7 +79,14 @@ class Model(nn.Module):
             self.projection = nn.Linear(
                 self.head_nf * configs.enc_in, configs.num_class)
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, prior=None):
+        """
+        prior: optional [N, d_model] tensor added to every patch token of variate n,
+        after the patch embedding and before the encoder (cgo2vec ontology
+        conditioning). Naive PatchTST folds the variate axis into the batch and shares
+        all weights, so it cannot tell variates apart; the prior is the only source of
+        variate identity. With prior=None the computation is identical to upstream.
+        """
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
@@ -91,6 +98,11 @@ class Model(nn.Module):
         x_enc = x_enc.permute(0, 2, 1)
         # u: [bs * nvars x patch_num x d_model]
         enc_out, n_vars = self.patch_embedding(x_enc)
+        if prior is not None:
+            # [bs * nvars, P, d] -> [bs, nvars, P, d], one prior row per variate.
+            enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+            enc_out = enc_out + prior.unsqueeze(0).unsqueeze(2)
+            enc_out = torch.reshape(enc_out, (-1, enc_out.shape[-2], enc_out.shape[-1]))
 
         # Encoder
         # z: [bs * nvars x patch_num x d_model]
@@ -210,9 +222,9 @@ class Model(nn.Module):
         output = self.projection(output)  # (batch_size, num_classes)
         return output
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, prior=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(
