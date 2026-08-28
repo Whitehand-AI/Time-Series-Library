@@ -70,12 +70,17 @@ class Model(nn.Module):
             self.dropout = nn.Dropout(configs.dropout)
             self.projection = nn.Linear(configs.d_model * configs.seq_len, configs.num_class)
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, prior=None):
+        """
+        prior: optional [enc_in, d_model] tensor, one row per input channel (cgo2vec
+        ontology conditioning), passed to both DataEmbeddings. With prior=None the
+        computation is identical to upstream.
+        """
         # Embedding
-        enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        enc_out = self.enc_embedding(x_enc, x_mark_enc, prior=prior)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
 
-        dec_out = self.dec_embedding(x_dec, x_mark_dec)
+        dec_out = self.dec_embedding(x_dec, x_mark_dec, prior=prior)
         dec_out = self.decoder(dec_out, enc_out, x_mask=None, cross_mask=None)
         return dec_out
 
@@ -108,9 +113,9 @@ class Model(nn.Module):
         output = self.projection(output)  # (batch_size, num_classes)
         return output
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, prior=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)

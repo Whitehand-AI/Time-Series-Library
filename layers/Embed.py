@@ -117,12 +117,18 @@ class DataEmbedding(nn.Module):
             d_model=d_model, embed_type=embed_type, freq=freq)
         self.dropout = nn.Dropout(p=dropout)
 
-    def forward(self, x, x_mark):
+    def forward(self, x, x_mark, prior=None):
+        # prior: optional [c_in, d_model], one row per input channel (cgo2vec ontology
+        # conditioning). The token for a timestep is the channel-mixing value embedding
+        # plus each channel's prior row weighted by that channel's value at the timestep.
+        # With prior=None the computation is identical to upstream.
+        v = self.value_embedding(x)
+        if prior is not None:
+            v = v + torch.einsum('bln,nd->bld', x, prior)
         if x_mark is None:
-            x = self.value_embedding(x) + self.position_embedding(x)
+            x = v + self.position_embedding(x)
         else:
-            x = self.value_embedding(
-                x) + self.temporal_embedding(x_mark) + self.position_embedding(x)
+            x = v + self.temporal_embedding(x_mark) + self.position_embedding(x)
         return self.dropout(x)
 
 
