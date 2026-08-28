@@ -47,7 +47,14 @@ class Model(nn.Module):
             self.dropout = nn.Dropout(configs.dropout)
             self.projection = nn.Linear(configs.d_model * configs.enc_in, configs.num_class)
 
-    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec):
+    def forecast(self, x_enc, x_mark_enc, x_dec, x_mark_dec, prior=None):
+        """
+        prior: optional [N, d_model] tensor added to the N variate tokens after the
+        inverted embedding and before cross-variate attention, one row per variate
+        (cgo2vec ontology conditioning). The time-feature tokens that the embedding
+        appends after the variates are left untouched. With prior=None the
+        computation is identical to upstream.
+        """
         # Normalization from Non-stationary Transformer
         means = x_enc.mean(1, keepdim=True).detach()
         x_enc = x_enc - means
@@ -57,7 +64,9 @@ class Model(nn.Module):
         _, _, N = x_enc.shape
 
         # Embedding
-        enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        enc_out = self.enc_embedding(x_enc, x_mark_enc)  # [B, N (+ time features), d_model]
+        if prior is not None:
+            enc_out = torch.cat([enc_out[:, :N] + prior.unsqueeze(0), enc_out[:, N:]], dim=1)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
 
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
@@ -116,9 +125,9 @@ class Model(nn.Module):
         output = self.projection(output)  # (batch_size, num_classes)
         return output
 
-    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None):
+    def forward(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask=None, prior=None):
         if self.task_name == 'long_term_forecast' or self.task_name == 'short_term_forecast':
-            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec)
+            dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
