@@ -101,11 +101,21 @@ class Model(nn.Module):
         dec_out = self.decoder(dec_in, enc_out)
         return dec_out
 
-    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
+    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask, prior=None):
+        """
+        prior: optional [N, d_model] tensor added to every segment token of variate n,
+        after the positional embedding and before pre_norm (cgo2vec ontology
+        conditioning), exactly as in `forecast`. The same caveat applies:
+        enc_pos_embedding already has a variate axis, so this prior is representable by
+        that parameter alone; it changes the optimisation path, not the function class.
+        With prior=None the computation is identical to this method without the argument.
+        """
         # embedding
         x_enc, n_vars = self.enc_value_embedding(x_enc.permute(0, 2, 1))
         x_enc = rearrange(x_enc, '(b d) seg_num d_model -> b d seg_num d_model', d=n_vars)
         x_enc += self.enc_pos_embedding
+        if prior is not None:
+            x_enc = x_enc + prior.unsqueeze(0).unsqueeze(2)  # [1, N, 1, d_model]
         x_enc = self.pre_norm(x_enc)
         enc_out, attns = self.encoder(x_enc)
 
@@ -144,7 +154,7 @@ class Model(nn.Module):
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
-            dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
+            dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask, prior=prior)
             return dec_out  # [B, L, D]
         if self.task_name == 'anomaly_detection':
             dec_out = self.anomaly_detection(x_enc)

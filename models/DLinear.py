@@ -85,9 +85,16 @@ class Model(nn.Module):
         # Encoder
         return self.encoder(x_enc, prior=prior)
 
-    def imputation(self, x_enc):
+    def imputation(self, x_enc, prior=None):
+        """
+        prior: optional [N, seq_len] tensor added to every sample's reconstruction, one
+        row per variate (cgo2vec ontology conditioning), the same site as in `forecast`.
+        Note the width: __init__ sets self.pred_len = configs.seq_len for this task, so
+        an imputation prior is seq_len wide, not pred_len. With prior=None the
+        computation is identical to this method without the argument.
+        """
         # Encoder
-        return self.encoder(x_enc)
+        return self.encoder(x_enc, prior=prior)
 
     def anomaly_detection(self, x_enc):
         # Encoder
@@ -108,7 +115,7 @@ class Model(nn.Module):
             dec_out = self.forecast(x_enc, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
-            dec_out = self.imputation(x_enc)
+            dec_out = self.imputation(x_enc, prior=prior)
             return dec_out  # [B, L, D]
         if self.task_name == 'anomaly_detection':
             dec_out = self.anomaly_detection(x_enc)

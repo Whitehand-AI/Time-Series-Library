@@ -128,14 +128,18 @@ class Model(nn.Module):
         return dec_out
 
     def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
-        # Normalization from Non-stationary Transformer
-        means = torch.sum(x_enc, dim=1) / torch.sum(mask == 1, dim=1)
-        means = means.unsqueeze(1).detach()
+        # Normalization from Non-stationary Transformer, over the observed entries only.
+        n_obs = torch.sum(mask == 1, dim=1)
+        denom = n_obs.clamp(min=1)
+        means = (torch.sum(x_enc, dim=1) / denom).unsqueeze(1).detach()
         x_enc = x_enc.sub(means)
         x_enc = x_enc.masked_fill(mask == 0, 0)
-        stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) /
-                           torch.sum(mask == 1, dim=1) + 1e-5)
-        stdev = stdev.unsqueeze(1).detach()
+        stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) / denom + 1e-5)
+        # A channel with no observation at all has no scale to borrow: normalise by
+        # nothing, so the head's raw output is the prediction and the channel has to be
+        # inferred from the others. Without this, denom would be 0 and the batch NaNs,
+        # which makes the whole-variate missingness pattern unrunnable.
+        stdev = torch.where(n_obs > 0, stdev, torch.ones_like(stdev)).unsqueeze(1).detach()
         x_enc = x_enc.div(stdev)
 
         # embedding

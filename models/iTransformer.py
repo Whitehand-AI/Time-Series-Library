@@ -75,17 +75,36 @@ class Model(nn.Module):
         dec_out = dec_out + (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
         return dec_out
 
-    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
-        # Normalization from Non-stationary Transformer
-        means = x_enc.mean(1, keepdim=True).detach()
-        x_enc = x_enc - means
-        stdev = torch.sqrt(torch.var(x_enc, dim=1, keepdim=True, unbiased=False) + 1e-5)
-        x_enc /= stdev
+    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask, prior=None):
+        """
+        prior: optional [N, d_model] tensor added to the N variate tokens after the
+        inverted embedding and before cross-variate attention, one row per variate
+        (cgo2vec ontology conditioning), exactly as in `forecast`. The time-feature
+        tokens that the embedding appends after the variates are left untouched. With
+        prior=None the computation is identical to this method without the argument.
+        """
+        # Normalization from Non-stationary Transformer, over the OBSERVED entries only,
+        # as TimesNet.imputation and PatchTST.imputation already do for this task. Taking
+        # the statistics over the zero-filled tensor makes a channel's scale a function of
+        # how much of it is missing, and a fully missing channel collapses to
+        # stdev ~ sqrt(1e-5), which crushes its reconstruction toward zero.
+        n_obs = torch.sum(mask == 1, dim=1)
+        denom = n_obs.clamp(min=1)
+        means = (torch.sum(x_enc, dim=1) / denom).unsqueeze(1).detach()
+        x_enc = (x_enc - means).masked_fill(mask == 0, 0)
+        stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) / denom + 1e-5)
+        # A channel with no observation at all has no scale to borrow: normalise by
+        # nothing, so the head's raw output is the prediction and the channel has to be
+        # inferred from the others. Without this, denom would be 0 and the batch NaNs.
+        stdev = torch.where(n_obs > 0, stdev, torch.ones_like(stdev)).unsqueeze(1).detach()
+        x_enc = x_enc / stdev
 
         _, L, N = x_enc.shape
 
         # Embedding
         enc_out = self.enc_embedding(x_enc, x_mark_enc)
+        if prior is not None:
+            enc_out = torch.cat([enc_out[:, :N] + prior.unsqueeze(0), enc_out[:, N:]], dim=1)
         enc_out, attns = self.encoder(enc_out, attn_mask=None)
 
         dec_out = self.projection(enc_out).permute(0, 2, 1)[:, :, :N]
@@ -130,7 +149,7 @@ class Model(nn.Module):
             dec_out = self.forecast(x_enc, x_mark_enc, x_dec, x_mark_dec, prior=prior)
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
-            dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
+            dec_out = self.imputation(x_enc, x_mark_enc, x_dec, x_mark_dec, mask, prior=prior)
             return dec_out  # [B, L, D]
         if self.task_name == 'anomaly_detection':
             dec_out = self.anomaly_detection(x_enc)

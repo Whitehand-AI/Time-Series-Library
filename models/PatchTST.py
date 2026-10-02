@@ -124,21 +124,36 @@ class Model(nn.Module):
                   (means[:, 0, :].unsqueeze(1).repeat(1, self.pred_len, 1))
         return dec_out
 
-    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask):
-        # Normalization from Non-stationary Transformer
-        means = torch.sum(x_enc, dim=1) / torch.sum(mask == 1, dim=1)
-        means = means.unsqueeze(1).detach()
+    def imputation(self, x_enc, x_mark_enc, x_dec, x_mark_dec, mask, prior=None):
+        """
+        prior: optional [N, d_model] tensor added to every patch token of variate n,
+        after the patch embedding and before the encoder (cgo2vec ontology
+        conditioning), exactly as in `forecast`. With prior=None the computation is
+        identical to this method without the argument.
+        """
+        # Normalization from Non-stationary Transformer, over the observed entries only.
+        n_obs = torch.sum(mask == 1, dim=1)
+        denom = n_obs.clamp(min=1)
+        means = (torch.sum(x_enc, dim=1) / denom).unsqueeze(1).detach()
         x_enc = x_enc - means
         x_enc = x_enc.masked_fill(mask == 0, 0)
-        stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) /
-                           torch.sum(mask == 1, dim=1) + 1e-5)
-        stdev = stdev.unsqueeze(1).detach()
-        x_enc /= stdev
+        stdev = torch.sqrt(torch.sum(x_enc * x_enc, dim=1) / denom + 1e-5)
+        # A channel with no observation at all has no scale to borrow: normalise by
+        # nothing, so the head's raw output is the prediction and the channel has to be
+        # inferred from the others. Without this, denom would be 0 and the batch NaNs,
+        # which makes the whole-variate missingness pattern unrunnable.
+        stdev = torch.where(n_obs > 0, stdev, torch.ones_like(stdev)).unsqueeze(1).detach()
+        x_enc = x_enc / stdev
 
         # do patching and embedding
         x_enc = x_enc.permute(0, 2, 1)
         # u: [bs * nvars x patch_num x d_model]
         enc_out, n_vars = self.patch_embedding(x_enc)
+        if prior is not None:
+            # [bs * nvars, P, d] -> [bs, nvars, P, d], one prior row per variate.
+            enc_out = torch.reshape(enc_out, (-1, n_vars, enc_out.shape[-2], enc_out.shape[-1]))
+            enc_out = enc_out + prior.unsqueeze(0).unsqueeze(2)
+            enc_out = torch.reshape(enc_out, (-1, enc_out.shape[-2], enc_out.shape[-1]))
 
         # Encoder
         # z: [bs * nvars x patch_num x d_model]
@@ -228,7 +243,7 @@ class Model(nn.Module):
             return dec_out[:, -self.pred_len:, :]  # [B, L, D]
         if self.task_name == 'imputation':
             dec_out = self.imputation(
-                x_enc, x_mark_enc, x_dec, x_mark_dec, mask)
+                x_enc, x_mark_enc, x_dec, x_mark_dec, mask, prior=prior)
             return dec_out  # [B, L, D]
         if self.task_name == 'anomaly_detection':
             dec_out = self.anomaly_detection(x_enc)
